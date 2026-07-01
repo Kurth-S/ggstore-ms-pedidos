@@ -15,8 +15,8 @@ public class AdminController {
 
     private final AdminService adminService;
 
-    @GetMapping("/dashboard")
-    public ResponseEntity<AdminStatsResponse> dashboard() {
-        return ResponseEntity.ok(adminService.getStats());
+    @GetMapping("/stats")
+    public ResponseEntity<AdminStatsResponse> obtenerStats() {
+        return ResponseEntity.ok(adminService.obtenerStats());
     }
 }

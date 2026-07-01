@@ -1,20 +1,18 @@
 package com.ggstore.ms_pedidos.service;
 
-import com.ggstore.ms_pedidos.client.JuegoClient;
 import com.ggstore.ms_pedidos.dto.AdminStatsResponse;
-import com.ggstore.ms_pedidos.dto.JuegoMasVendidoResponse;
-import com.ggstore.ms_pedidos.dto.VentasPorMesResponse;
-import com.ggstore.ms_pedidos.model.Pedido;
-import com.ggstore.ms_pedidos.model.PedidoDetalle;
 import com.ggstore.ms_pedidos.repository.PedidoDetalleRepository;
 import com.ggstore.ms_pedidos.repository.PedidoRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.client.RestTemplate;
 
 import java.math.BigDecimal;
-import java.util.*;
-import java.util.stream.Collectors;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -22,58 +20,42 @@ public class AdminService {
 
     private final PedidoRepository pedidoRepository;
     private final PedidoDetalleRepository pedidoDetalleRepository;
-    private final JuegoClient juegoClient;
+    private final RestTemplate restTemplate;
 
-    @Transactional(readOnly = true)
-    public AdminStatsResponse getStats() {
-        List<Pedido> pedidos = pedidoRepository.findAll();
+    @Value("${ms-catalogo.url}")
+    private String msCatalogoUrl;
 
-        long totalPedidos = pedidos.size();
+    public AdminStatsResponse obtenerStats() {
+        Long totalPedidos = pedidoRepository.countPedidosPagados();
+        BigDecimal ingresosTotales = pedidoRepository.sumIngresosTotales();
 
-        BigDecimal ingresosTotales = pedidos.stream()
-                .map(Pedido::getTotal)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        List<AdminStatsResponse.JuegoVendidoDTO> juegosMasVendidos = new ArrayList<>();
+        for (Object[] row : pedidoDetalleRepository.findTopJuegosVendidos()) {
+            UUID juegoId = UUID.fromString(row[0].toString());
+            Long cantidadVendida = ((Number) row[1]).longValue();
+            String titulo = obtenerTituloJuego(juegoId);
+            juegosMasVendidos.add(new AdminStatsResponse.JuegoVendidoDTO(juegoId, titulo, cantidadVendida));
+        }
 
-        // Juegos más vendidos
-        List<PedidoDetalle> detalles = pedidoDetalleRepository.findAll();
-        Map<UUID, Long> cantidadPorJuego = detalles.stream()
-                .collect(Collectors.groupingBy(
-                        PedidoDetalle::getJuegoId,
-                        Collectors.summingLong(d -> d.getCantidad())));
-
-        List<JuegoMasVendidoResponse> juegosMasVendidos = cantidadPorJuego.entrySet().stream()
-                .sorted(Map.Entry.<UUID, Long>comparingByValue().reversed())
-                .limit(5)
-                .map(e -> {
-                    String titulo;
-                    try {
-                        titulo = juegoClient.obtenerJuego(e.getKey()).titulo();
-                    } catch (Exception ex) {
-                        titulo = e.getKey().toString();
-                    }
-                    return new JuegoMasVendidoResponse(e.getKey(), titulo, e.getValue());
-                })
-                .toList();
-
-        // Ventas por mes
-        List<VentasPorMesResponse> ventasPorMes = pedidos.stream()
-                .collect(Collectors.groupingBy(
-                        p -> p.getFecha().getYear() * 100 + p.getFecha().getMonthValue(),
-                        Collectors.collectingAndThen(
-                                Collectors.toList(),
-                                lista -> new VentasPorMesResponse(
-                                        lista.get(0).getFecha().getMonthValue(),
-                                        lista.get(0).getFecha().getYear(),
-                                        (long) lista.size(),
-                                        lista.stream().map(Pedido::getTotal).reduce(BigDecimal.ZERO, BigDecimal::add)
-                                )
-                        )
-                ))
-                .entrySet().stream()
-                .sorted(Map.Entry.<Integer, VentasPorMesResponse>comparingByKey().reversed())
-                .map(Map.Entry::getValue)
-                .toList();
+        List<AdminStatsResponse.VentasMesDTO> ventasPorMes = new ArrayList<>();
+        for (Object[] row : pedidoRepository.findVentasPorMes()) {
+            Integer mes = ((Number) row[0]).intValue();
+            Integer anio = ((Number) row[1]).intValue();
+            Long totalMes = ((Number) row[2]).longValue();
+            BigDecimal ingresosMes = new BigDecimal(row[3].toString());
+            ventasPorMes.add(new AdminStatsResponse.VentasMesDTO(mes, anio, totalMes, ingresosMes));
+        }
 
         return new AdminStatsResponse(totalPedidos, ingresosTotales, juegosMasVendidos, ventasPorMes);
+    }
+
+    private String obtenerTituloJuego(UUID juegoId) {
+        try {
+            Map juego = restTemplate.getForObject(
+                    msCatalogoUrl + "/juegos/" + juegoId, Map.class);
+            return juego != null ? juego.get("titulo").toString() : juegoId.toString();
+        } catch (Exception e) {
+            return juegoId.toString();
+        }
     }
 }
